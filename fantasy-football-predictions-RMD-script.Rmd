@@ -1,0 +1,711 @@
+---
+title: "harvardx-fantasy-football-predictions"
+output: html_document
+---
+
+## Executive Summary   
+  
+In this project, we are attempting to determine how to predict which players will perform best in a fantasy football season. 
+
+For those who don't know, fantasy football is an online game where a person selects a collection of NFL football players to form a team. Then that person competes against other people who have their own teams. A team's score is the sum of the scores of the collective players, where each player's score is based on their "real-life" performance in their game that week. The objective is to score more points than the other person's team for a given week.
+  
+The dataset comes from the 2018 dataset from a respected source: Pro Football Reference. This has basic statistics about football players from the 2018 season.    
+  
+  
+The goal of this analysis is to minimize RMSE (a measure of prediction error) in our fantasy point estimates. Thus, we will be making rating predictions based on the other data, and RMSE will measure how far off our predictions are. The better our predictions, the lower the RMSE. 
+
+Beyond this goal, there are several other goals to put learnings into practice. This report applies concepts such as web scraping, data exploration, visualization, model fitting, and model validation, to name a few.      
+  
+The dataset itself can be found here:  
+https://www.pro-football-reference.com/years/2018/fantasy.htm
+  
+
+```{r load packages, include = FALSE}
+
+#install packages if needed
+if(!require(caret)) install.packages('caret') 
+library(caret)
+if(!require(tidyverse)) install.packages('tidyverse') 
+library(tidyverse)
+if(!require(data.table)) install.packages('data.table')
+library(data.table)
+if(!require(XML)) install.packages('XML')
+library(XML)
+if(!require(RCurl)) install.packages('Rcurl')
+library(RCurl)
+if(!require(rpart)) install.packages('rpart') 
+library(rpart)
+if(!require(rpart.plot)) install.packages('rpart.plot') 
+library(rpart.plot)
+if(!require(DAAG)) install.packages('DAAG') 
+library(DAAG)
+if(!require(glmnet)) install.packages('glmnet') 
+library(glmnet)
+if(!require(outliers)) install.packages('outliers')
+library(outliers)
+if(!require(plyr)) install.packages('plyr')
+library(plyr)
+if(!require(rvest)) install.packages('rvest')
+library(rvest)
+if(!require(GGally)) install.packages('GGally')
+library(GGally)
+if(!require(magrittr)) install.packages('magrittr')
+library(magrittr)
+if(!require(broom)) install.packages('broom')
+library(broom)
+
+```
+
+
+
+*******************************************************************************************************************************
+
+## Analysis   
+  
+The first thing we need to do is to import the data. Below we scrape data from Pro Football Reference's 2018 fantasy football website. 
+```{r load data}
+
+#set url variable
+pro_fball_ref_2018 <- 'https://www.pro-football-reference.com/years/2018/fantasy.htm'
+
+#use getURL to obtain the html content from the webpage
+html <- getURL(pro_fball_ref_2018)
+
+#read the html table in the content
+pro_fball_ref_ffb_2018 <- readHTMLTable(html, header = TRUE, as.data.frame = TRUE, stringsAsFactors = FALSE)
+
+
+#below is another potential approach, but not one that I used as the above worked well. I'll leave it here for reference.
+#http://bradleyboehmke.github.io/2015/12/scraping-html-tables.html
+#html2 <- read_html('https://www.pro-football-reference.com/years/2018/fantasy.htm')
+#pro_fball_ref_ffb_2018 <- html2 %>%
+#  html_nodes("table") %>%
+#  html_table(header = FALSE, trim = TRUE)
+
+
+```
+
+  
+Now that we've imported the data, we'll clean up the table to get it ready for further processing.
+```{r data preprocessing}
+
+#store the table as a dataframe (it currently exists as a list)
+pro_fball_ref_ffb_2018_df <- ldply(pro_fball_ref_ffb_2018, data.frame)
+
+#the header is repeated several times throughout the table. We'll remove the rows that just display the header to clean up the data by first identifying the "bad" rows. 
+remove_row_ind <- which((with(pro_fball_ref_ffb_2018_df, FantPos == "FantPos" & Age == "Age"))) 
+
+#and now remove all the bad rows from our data frame
+pro_fball_ref_ffb_2018_df <- pro_fball_ref_ffb_2018_df[-remove_row_ind, ]
+
+#much of the data exists as characters. convert the data types to appropriate values (numeric).
+pro_fball_ref_ffb_2018_df <- pro_fball_ref_ffb_2018_df %>% 
+  mutate(Age = as.numeric(Age),
+         G = as.numeric(G),
+         GS = as.numeric(GS),
+         Pass_Cmp = as.numeric(Cmp),
+         Pass_Att = as.numeric(Att),
+         Pass_Yds = as.numeric(Yds),
+         Pass_TD = as.numeric(TD),
+         Pass_Int = as.numeric(Int),
+         Rush_Att = as.numeric(Att.1),
+         Rush_Yds = as.numeric(Yds.1),
+         Rush_Yds_per_Att = as.numeric(Y.A),
+         Rush_TD = as.numeric(TD.1),
+         Rec_Tgt = as.numeric(Tgt),
+         Rec_Receptions = as.numeric(Rec),
+         Rec_Yds = as.numeric(Yds.2),
+         Rec_Yds_per_Rec = as.numeric(Y.R),
+         Rec_TD = as.numeric(TD.2),
+         Fmb = as.numeric(Fmb),
+         Fmb_Loss = as.numeric(FL),
+         Total_TD = as.numeric(TD.3),
+         Two_Point_Conv = as.numeric(X2PM),
+         Two_Point_Pass = as.numeric(X2PP),
+         Fant_Pts = as.numeric(FantPt),
+         PPR_Pts = as.numeric(PPR),
+         DraftKing_Pts = as.numeric(DKPt),
+         FanDuel_Pts = as.numeric(FDPt),
+         Value_Over_Baseline = as.numeric(VBD),
+         Rank_Pos = as.numeric(PosRank),
+         Rank_Ovrl = as.numeric(OvRank)
+         )
+
+#remove the old character columns by identifying the old  columns
+drop <- c("Cmp", "Att", "Yds", "TD", "Int", "Att.1", "Yds.1", "Y.A", "TD.1", "Tgt", "Rec", "Yds.2", "Y.R", "TD.2", "Fmb", "FL", "TD.3", "X2PM", "X2PP", "FantPt", "PPR", "DKPt", "FDPt", "VBD", "PosRank", "OvRank") 
+
+#and remove these old columns
+pro_fball_ref_ffb_2018_df <- pro_fball_ref_ffb_2018_df[, !names(pro_fball_ref_ffb_2018_df) %in% drop]
+
+
+```
+
+
+Outliers have the potential to distort and skew estimates to accommodate the outlier. We'll look for outliers and determine how to address them.  
+```{r exploratory data analysis- outliers}
+
+#use grubbs.test to statistically test for outliers. The overall goal is to predict fantasy points, so we'll use that variables when checking for outliers.
+
+
+#check for outlier. Start with the high-end (opposite = FALSE)
+grubbs.test(pro_fball_ref_ffb_2018_df$Fant_Pts,        #the vector for which we want to test if there are outliers
+            type = 10,             #test for one outlier
+            opposite = FALSE,      #test for largest difference from mean
+            two.sided = FALSE)      #the outlier can be on either end (high or low) but not two-sided
+
+#This test suggests that 417 is an outlier. The p-value is below .01, so the results are statistically significant.
+
+
+#check for one outlier at a time. Now test the low-end (opposite = TRUE)
+grubbs.test(pro_fball_ref_ffb_2018_df$Fant_Pts,        #the vector for which we want to test if there are outliers
+            type = 10,             #test for one outlier
+            opposite = TRUE,      #test for largest difference from mean
+            two.sided = FALSE)      #the outlier can be on either end (high or low) but not two-sided
+
+#This test suggests that -2 is not an outlier. The p-value is 1, so the results are not statistically significant.
+
+#look at the results visually - we see there are many values counted as outliers, but we'll focus on the most extreme value as if we can explain this outlier, the others should also be explainable
+pro_fball_ref_ffb_2018_df %>% 
+  ggplot(aes(x = 1, y = Fant_Pts)) + 
+  geom_boxplot(outlier.color = 'red')
+
+
+#we can look at the entry associated with the 417 Fantasy Points ranking, which is coming through as an outlier. However, this datapoint makes sense and is for a player who performed extremely well in 2018 (Patrick Mahomes). So we will not remove the outliers for this dataset as they represent true values. 
+pro_fball_ref_ffb_2018_df[which(pro_fball_ref_ffb_2018_df$Fant_Pts == 417), 1:5]
+
+
+
+```
+  
+Now that we've decided to keep the outliers, we'll summarize the dataset. 
+```{r exploratory data analysis - summary}
+
+#summarize the dataset
+summary(pro_fball_ref_ffb_2018_df)
+
+
+#this gives the view of the first few rows of the highest-scoring players.
+pro_fball_ref_ffb_2018_df %>% arrange(desc(Fant_Pts)) %>% head()
+
+
+```
+
+From the summary, we saw missing values for several variables. In most cases, NA's are expected as part of the nature of the game. For example, we don't expect quarterbacks to have receiving yards, so some blank reception variables are reasonable.  
+```{r missing values data imputation}
+
+#After looking at the types of positions having these blank values, it makes sense overall.
+
+# - Rush_Yds_per_Att - highest counts for QB and WR, as expected
+pro_fball_ref_ffb_2018_df[is.na(pro_fball_ref_ffb_2018_df$Rush_Yds_per_Att),] %>% group_by(FantPos) %>% tally()
+# - Rec_Yds_per_Rec - highest counts for QB and RB, as expected
+pro_fball_ref_ffb_2018_df[is.na(pro_fball_ref_ffb_2018_df$Rec_Yds_per_Rec),] %>% group_by(FantPos) %>% tally()
+# - Two_Point_Conv - a mix of positions, as expected
+pro_fball_ref_ffb_2018_df[is.na(pro_fball_ref_ffb_2018_df$Two_Point_Conv),] %>% group_by(FantPos) %>% tally()
+# - Two_Point_Pass - no N/A's
+pro_fball_ref_ffb_2018_df[is.na(pro_fball_ref_ffb_2018_df$Rush_Yds_per_Pass),] %>% group_by(FantPos) %>% tally()
+# - Value_Over_Baseline
+# - Rank_Ovrl
+
+
+#However, NA's can cause issues when analyzing data. As such, we'll replace these NA's with 0's.
+#Blank values in these columns suggest the player did not accumulate stats in that area, thus the amount is 0. This is backed up by the original source dataset, where blanks and 0's both exist. For the most part, the blank values are usually for calculated fields that either calculate to 0 or are divided by 0, whereas 0's are for recorded data.
+
+# - Rush_Yds_per_Att
+pro_fball_ref_ffb_2018_df$Rush_Yds_per_Att[is.na(pro_fball_ref_ffb_2018_df$Rush_Yds_per_Att)] <- 0
+# - Rec_Yds_per_Rec
+pro_fball_ref_ffb_2018_df$Rec_Yds_per_Rec[is.na(pro_fball_ref_ffb_2018_df$Rec_Yds_per_Rec)] <- 0
+# - Two_Point_Conv
+pro_fball_ref_ffb_2018_df$Two_Point_Conv[is.na(pro_fball_ref_ffb_2018_df$Two_Point_Conv)] <- 0
+# - Two_Point_Pass
+pro_fball_ref_ffb_2018_df$Two_Point_Pass[is.na(pro_fball_ref_ffb_2018_df$Two_Point_Pass)] <- 0
+
+
+#We'll also look at where the fantasy points value is NA since that's what we're predicting, and if we should be concerned about a lack of value there. For clean output, we'll only include the first 9 columns
+pro_fball_ref_ffb_2018_df[is.na(pro_fball_ref_ffb_2018_df$Fant_Pts), 1:9]
+
+#looking through, the values where the fantasy points are NA look correct, as these are backup players who did not accumulate statistics during the season. So these can be removed. Since we need the fantasy points, we'll remove these null values from our dataframe.
+pro_fball_ref_ffb_2018_df <- pro_fball_ref_ffb_2018_df[complete.cases(pro_fball_ref_ffb_2018_df[ , "Fant_Pts"]), ]
+
+
+```
+
+We'll also explore different correlations between different variables. 
+
+```{r correlation}
+
+#create a matrix with just numeric values, and ignore other dependent variables that are not fantasy points as that's not what we're predicting
+pro_fball_ref_ffb_2018_matrix <- as.matrix(pro_fball_ref_ffb_2018_df %>% select('Age', 'G', 'GS', 'Pass_Cmp', 'Pass_Att', 'Pass_Yds', 'Pass_TD', 'Pass_Int', 'Rush_Att', 'Rush_Yds', 'Rush_Yds_per_Att', 'Rush_TD', 'Rec_Tgt', 'Rec_Receptions', 'Rec_Yds', 'Rec_Yds_per_Rec', 'Rec_TD', 'Fmb_Loss', 'Total_TD', 'Two_Point_Conv', 'Two_Point_Pass', 'Fant_Pts' ))
+
+#create a correlation matrix based on the above matrix 
+ggcorr(pro_fball_ref_ffb_2018_matrix, nbreaks = 5, geom = 'text', label_alpha = TRUE, angle = -30)
+
+#note that while rushing and receiving yards per attempt and age seem to have little correlation with Fant_Pts, all other variables have some correlation. This is not surprising, as fantasy points are a direct function of some of these values (TD's, yards). 
+
+#while not that interesting, the largest correlation appears to be Games Started (GS) and Fantasy Points (Fant_Pts). We'll plot this association just to get an idea of how one of the strongest correlations looks like. Note that GS has values between 0 and 16, so there's a limited number of values GS can take, 
+pro_fball_ref_ffb_2018_df %>% 
+  ggplot(aes(GS, Fant_Pts)) +
+  geom_point(alpha = .5)
+
+#There are some seemingly surprising results, such as the high positive correlation between negative plays (fumbles, interceptions), but this makes sense because the best players play the most, so have accumulate these negative values as a nature of playing so much. We'll use linear regression to get a better understanding of what's needed soon. 
+
+
+```
+
+**************************************************************************************************************************
+  
+The first model we'd like to build is a linear regression model to see the effects of the variables on overall points scored. Before doing that, we'll split the data into training and test sets. The training set will be used to build the model. The test set will be used to measure the model's quality.
+
+```{r split data}
+
+#split the data into training and test set.
+set.seed(1)
+test_index1 <- createDataPartition(y = pro_fball_ref_ffb_2018_df$Fant_Pts, times = 1, p = 0.1, list = FALSE)
+train_pro_ffball <- pro_fball_ref_ffb_2018_df[-test_index1,]
+test_pro_ffball <- pro_fball_ref_ffb_2018_df[test_index1,]
+
+
+```
+
+
+
+```{r linear regression}
+
+#linear regression on training data
+Lin_Reg_2018 <- lm (Fant_Pts ~ Age + G + GS + Pass_Cmp + Pass_Att + Pass_Yds + Pass_TD + Pass_Int + Rush_Att + Rush_Yds + Rush_Yds_per_Att + Rush_TD + Rec_Tgt + Rec_Receptions + Rec_Yds + Rec_Yds_per_Rec + Rec_TD + Fmb_Loss + Total_TD + Two_Point_Conv + Two_Point_Pass, 
+                    data = train_pro_ffball)
+
+#we can check the results
+summary(Lin_Reg_2018)
+
+```
+  
+From this, we see certain variables are more significant than others. We'll start off with a higher threshold, removing variables with a p-value greater than 0.15. And we'll re-run the model accordingly.
+
+```{r linear regression 2}
+
+#linear regression on training data.
+Lin_Reg_2018_2 <- lm (Fant_Pts ~ Age + Pass_Cmp + Pass_Yds + Pass_TD + Pass_Int + Rush_Att + Rush_Yds + Rush_Yds_per_Att + Rush_TD + Rec_Receptions + Rec_Yds + Rec_TD + Fmb_Loss + Total_TD + Two_Point_Conv + Two_Point_Pass, 
+                    data = train_pro_ffball)
+
+#we can check the results
+summary(Lin_Reg_2018_2)
+
+
+```
+
+From this, we see certain variables are more significant than others. We'll have a stricter threshold, removing variables with a p-value greater than 0.05. And we'll re-run the model accordingly.
+
+```{r linear regression 3}
+
+#linear regression on training data.
+Lin_Reg_2018_3 <- lm (Fant_Pts ~ Pass_Cmp + Pass_Yds + Pass_TD + Pass_Int + Rush_Yds + Rush_Yds_per_Att + Rush_TD + Rec_Receptions + Rec_Yds + Rec_TD + Fmb_Loss + Total_TD + Two_Point_Conv + Two_Point_Pass, 
+                    data = train_pro_ffball)
+
+#we can check the results
+summary(Lin_Reg_2018_3)
+
+tidy(Lin_Reg_2018_3, conf.int = TRUE)
+
+```
+  
+This model has significant coefficients, and we'll use this model on our test set.
+
+```{r calculate RMSE - lin reg}
+
+#RMSE can be used as a measure of prediction quality
+
+#predict the test set data based on the model
+y_hat_lin_reg <- predict(Lin_Reg_2018_3, test_pro_ffball)
+
+#calculate RMSE as the difference between our predictions and the actual testset values
+RMSE_lin_reg <- sqrt(mean((y_hat_lin_reg - test_pro_ffball$Fant_Pts)^2))
+
+
+```
+
+The resulting RMSE of this linear regression model is: 0.3658. This suggests our predicted points are very similar to the true points value. 
+
+
+**********************************************************************************************************************
+
+To do some further analysis, we'd like to scale the data so that the effect of certain variables do not overwhelm values on other variables. For example, passing yards can be on the order of 10^4, while passing touchdowns would be on the order of 10^1, so we don't want a 1 unit increase in passing yards to be treated the same as a 1 unit increase in passing touchdowns.
+
+```{r scale data}
+
+#we're going to be selecting certain variables and analyzing the effects of those variables on projected points. We have to scale the data to prevent outsized effects of certain variables. This needs to be done on the continuous (i.e. not categorical) variables
+scaled_ffball_2018 <- pro_fball_ref_ffb_2018_df %>% mutate_each_(funs(scale(.) %>% as.vector),
+                       vars = c('Age', 'G', 'GS', 'Pass_Cmp', 'Pass_Att', 'Pass_Yds', 'Pass_TD', 'Pass_Int', 'Rush_Att', 'Rush_Yds', 'Rush_Yds_per_Att', 'Rush_TD', 'Rec_Tgt', 'Rec_Receptions', 'Rec_Yds', 'Rec_Yds_per_Rec', 'Rec_TD', 'Fmb_Loss', 'Total_TD', 'Two_Point_Conv', 'Two_Point_Pass', 'Fant_Pts', 'PPR_Pts', 'DraftKing_Pts', 'FanDuel_Pts', 'Value_Over_Baseline', 'Rank_Pos', 'Rank_Ovrl' ))
+
+head(scaled_ffball_2018)
+```
+
+
+
+
+Now that we've scaled the data, we can use LASSO regression to select certain values based on a budget on the sum of the coefficients. LASSO is a global optimization variable selection method, that keeps the most important coefficients and drops the less important coefficients to 0 (thus removing the variable from the model). There is a more generalized version of LASSO (Elastic Net), which we'll explore here too.
+```{r variable selection}
+
+
+#prepare data to be used in glmnet, by creating a predictors matrix holding the numeric variables and a response matrix for the fantasy poitns
+ffball_predictors <- as.matrix(scaled_ffball_2018[, 6:26])
+ffball_response_fantpts <- as.matrix(scaled_ffball_2018[, 27]) %>% `colnames<-`('Fant_Pts')
+
+
+set.seed(1)
+
+#we can use elastic net to tune alpha. The closer alpha is to 1, the more it behaves like lasso regression, which tends to be better for picking variables. The closer alpha is to 1, the more it behaves like ridge regression, which tends to be better for minimizing prediction error. We'll use R^2 as the measuure of quality for each iteration.
+
+#####################
+
+#run for alpha = 0
+elastic_net_glm_0 <- cv.glmnet(x = ffball_predictors, y = ffball_response_fantpts, family = "gaussian", nfolds = 10, alpha = 0)
+small_lambda_index_0 <- which(elastic_net_glm_0$lambda == elastic_net_glm_0$lambda.min)
+small_lambda_betas_0 <- elastic_net_glm_0$glmnet.fit$beta[, small_lambda_index_0]
+
+
+#calculate the r-squared
+r2 <- elastic_net_glm_0$glmnet.fit$dev.ratio[which(elastic_net_glm_0$glmnet.fit$lambda == elastic_net_glm_0$lambda.min)]
+
+#add results to a dataframe
+elastic_net_results <- tibble(Alpha = '0', Rsquared = r2)
+
+
+#####################
+
+#run for alpha .25
+elastic_net_glm_0.25 <- cv.glmnet(x = ffball_predictors, y = ffball_response_fantpts, family = "gaussian", nfolds = 10, alpha = 0.25)
+small_lambda_index_0.25 <- which(elastic_net_glm_0.25$lambda == elastic_net_glm_0.25$lambda.min)
+small_lambda_betas_0.25 <- elastic_net_glm_0.25$glmnet.fit$beta[, small_lambda_index_0.25]
+
+#calculate the r-squared
+r2_0.25 <- elastic_net_glm_0.25$glmnet.fit$dev.ratio[which(elastic_net_glm_0.25$glmnet.fit$lambda == elastic_net_glm_0.25$lambda.min)]
+
+#create an entry in the R^2 table for this method
+elastic_net_results <- bind_rows(elastic_net_results,
+                          tibble(Alpha = '0.25', Rsquared = r2_0.25))
+
+elastic_net_results %>% knitr::kable()
+
+#####################
+
+#run for alpha .5
+elastic_net_glm_0.5 <- cv.glmnet(x = ffball_predictors, y = ffball_response_fantpts, family = "gaussian", nfolds = 10, alpha = 0.5)
+small_lambda_index_0.5 <- which(elastic_net_glm_0.5$lambda == elastic_net_glm_0.5$lambda.min)
+small_lambda_betas_0.5 <- elastic_net_glm_0.5$glmnet.fit$beta[, small_lambda_index_0.5]
+
+
+#calculate the r-squared
+r2_0.5 <- elastic_net_glm_0.5$glmnet.fit$dev.ratio[which(elastic_net_glm_0.5$glmnet.fit$lambda == elastic_net_glm_0.5$lambda.min)]
+
+
+#add results to table
+elastic_net_results <- bind_rows(elastic_net_results,
+                          tibble(Alpha = '0.5', Rsquared = r2_0.5))
+
+elastic_net_results %>% knitr::kable()
+
+#####################
+
+#run for alpha .75
+elastic_net_glm_0.75 <- cv.glmnet(x = ffball_predictors, y = ffball_response_fantpts, family = "gaussian", nfolds = 10, alpha = 0.75)
+small_lambda_index_0.75 <- which(elastic_net_glm_0.75$lambda == elastic_net_glm_0.75$lambda.min)
+small_lambda_betas_0.75 <- elastic_net_glm_0.75$glmnet.fit$beta[, small_lambda_index_0.75]
+
+
+#calculate the r-squared
+r2_0.75 <- elastic_net_glm_0.75$glmnet.fit$dev.ratio[which(elastic_net_glm_0.75$glmnet.fit$lambda == elastic_net_glm_0.75$lambda.min)]
+
+
+#add results to table
+elastic_net_results <- bind_rows(elastic_net_results,
+                          tibble(Alpha = '0.75', Rsquared = r2_0.75))
+
+elastic_net_results %>% knitr::kable()
+
+
+####################
+
+#run for alpha 1
+elastic_net_glm_1 <- cv.glmnet(x = ffball_predictors, y = ffball_response_fantpts, family = "gaussian", nfolds = 10, alpha = 1)
+small_lambda_index_1 <- which(elastic_net_glm_1$lambda == elastic_net_glm_1$lambda.min)
+small_lambda_betas_1 <- elastic_net_glm_1$glmnet.fit$beta[, small_lambda_index_1]
+
+
+#calculate the r-squared
+r2_1 <- elastic_net_glm_1$glmnet.fit$dev.ratio[which(elastic_net_glm_1$glmnet.fit$lambda == elastic_net_glm_1$lambda.min)]
+
+
+#add results to table
+elastic_net_results <- bind_rows(elastic_net_results,
+                          tibble(Alpha = '1', Rsquared = r2_1))
+
+elastic_net_results %>% knitr::kable()
+
+
+#############
+#All the R-squareds are close to each other. But from this, we see the best R-squared is when alpha = 0.5. We'll output this model's coefficients:
+small_lambda_betas_0.5
+
+```
+
+From this, we see the best R^2 value is when alpha = 0.5. This is a global variable selection approach which selects which variables are most useful, subject to a constraint of how much can be allocated to each variable. Values with 0 can definitely be removed from the model. And values with values very close to 0 are practically not significant for scaled data, so can also be ignored. We'll make |0.1| the threshold. That leaves these variables:  
+- Pass_Cmp  
+- Pass_Yds  
+- Pass_TD  
+- Rush_Yds  
+- Rec_Yds  
+- Total_TD  
+  
+
+Now we'll also run linear regression with above variables to determine effect of each in that model.
+
+```{r split data scaled}
+
+#split the data into training and test set. Training set used to build the model and test set is to assess accuracy.
+
+#Now we will use our dataset to split into training data (90%) and (initial) validation data (10%)...using the scaled data
+set.seed(1)
+test_index_scaled <- createDataPartition(y = scaled_ffball_2018$Fant_Pts, times = 1, p = 0.1, list = FALSE)
+train_pro_ffball_scaled <- scaled_ffball_2018[-test_index_scaled,]
+test_pro_ffball_scaled <- scaled_ffball_2018[test_index_scaled,]
+
+```
+
+
+```{r linear regression scaled}
+
+
+#predict using linear regression, calculate RMSE
+fit_2018_scaled <- lm(Fant_Pts ~ Pass_Cmp + Pass_Yds + Pass_TD + Rush_Yds + Rec_Yds + Total_TD, data = train_pro_ffball_scaled)
+
+summary(fit_2018_scaled)
+
+#use the fitted model to predict the test data and calculate the RMSE.
+y_hat_scaled <- predict(fit_2018_scaled, test_pro_ffball_scaled)
+RMSE_lin_reg_lasso_scaled <- sqrt(mean((y_hat_scaled - test_pro_ffball_scaled$Fant_Pts)^2))
+
+
+#now use the unscaled data to give us a linear model
+fit_2018 <- lm(Fant_Pts ~ Pass_Cmp + Pass_Yds + Pass_TD + Rush_Yds + Rec_Yds + Total_TD, data = train_pro_ffball)
+summary(fit_2018)
+
+#use the fitted model to predict the test data and calculate the RMSE.
+y_hat <- predict(fit_2018, test_pro_ffball)
+RMSE_lin_reg_lasso <- sqrt(mean((y_hat - test_pro_ffball$Fant_Pts)^2))
+
+#and we see the RMSE is 2.557708 on the unscaled data, suggesting it's predicted results  are off by 2.5 points.
+
+```
+  
+From this, we see that Passing Yards and Touchdowns, Rushing Yards, Receiving Yards, and Total Touchdowns have the largest influence on overall fantasy points. This model's RMSE is 2.56 on the unscaled data, meaning it's predicting values with a small amount of error.  
+  
+  
+**********************************************************************************************************
+  
+
+Regression tree - for continuous data:  
+ - Use decision tree on fantasy football data to plot a decision tree, which continues to split until we get to k partitions.It stops at k because that's where the RSS is only marginally increasing, according to the complexity parameter.  
+ - A minimum number of observations to be partitioned is part of the minsplit argument in rpart (defaulted to 20).  
+ - A minimum number of observations in each partition is part of the minbucket argument in rpart. If a bucket is smaller than this, it won't create a new partition (defaulted to round(minsplit/3)).  
+
+```{r Regression Tree - all numeric variables}
+
+#fit the tree using rpart...after several iterations, minsplit = 60 was used
+fit_tree <- rpart(Fant_Pts ~ Age + G + GS + Pass_Cmp + Pass_Att + Pass_Yds + Pass_TD + Pass_Int + Rush_Att + Rush_Yds + Rush_Yds_per_Att + Rush_TD + Rec_Tgt + Rec_Receptions + Rec_Yds + Rec_Yds_per_Rec + Rec_TD + Fmb_Loss + Total_TD + Two_Point_Conv + Two_Point_Pass, 
+                  data = train_pro_ffball, 
+                  minsplit = 60)
+
+#visualize the  tree
+rpart.plot(fit_tree, type = 2, extra = "auto", box.palette="RdBu", shadow.col="gray", nn=TRUE)
+
+
+#output the complexity parameter info
+printcp(fit_tree)
+
+
+```
+
+The complexity parameter is the amount by which splitting that node improved the relative error. So in this example, splitting the original root node dropped the relative error from 1.0 to 0.53029, so the CP of the root node is 0.469708. The smaller the cp, the bigger the tree.  
+   
+We'll use this information as a starting point to choose an optimal model. We want to choose the optimal cp.
+```{r Regression Tree - numeric variable}
+
+#How to choose optimal CP? Train several values of cp, see which one minimizes the error. Note that the tuning parameter for train's rpart method is the Complexity Parameter, as per http://topepo.github.io/caret/available-models.html
+fit_rpart <- train(Fant_Pts ~ Age + G + GS + Pass_Cmp + Pass_Att + Pass_Yds + Pass_TD + Pass_Int + Rush_Att + Rush_Yds + Rush_Yds_per_Att + Rush_TD + Rec_Tgt + Rec_Receptions + Rec_Yds + Rec_Yds_per_Rec + Rec_TD + Fmb_Loss + Total_TD + Two_Point_Conv + Two_Point_Pass,
+                     method = 'rpart',
+                     tuneGrid = data.frame(cp = seq(-1, .25, len = 25)),
+                     data = train_pro_ffball)
+
+
+#see the best value of CP
+fit_rpart$bestTune
+
+#plot the complexity parameter vs the RMSE. This aligns with the above results about the optimal complexity parameter that minimizes the RMSE
+ggplot(fit_rpart, highlight = TRUE)
+
+#find the smallest RMSE
+RMSE_reg_tree_min <- fit_rpart$results$RMSE[which.min(fit_rpart$results$RMSE)]
+
+
+```
+
+
+
+The cp that minimizes the RMSE is -0.0104. Use that cp when pruning the tree.
+```{r Regression Tree - Prune}
+
+#prune fit
+pruned_fit <- prune.rpart(fit_tree, cp = -0.0104)
+
+#visualize the pruned fit
+rpart.plot(pruned_fit, type = 5, extra = "auto", box.palette="RdBu", shadow.col="gray", nn=TRUE)
+
+
+#calculate RMSE of pruned fit
+y_hat_pruned <- predict(pruned_fit, test_pro_ffball)
+RMSE_reg_tree_pruned <- sqrt(mean(y_hat_pruned - test_pro_ffball$Fant_Pts)^2)
+
+
+```
+
+
+The above pruned tree gives a view of how different variables impact the prediction of fantasy points. From this, we see GS, Total_TD, Rush_Att, Rec_Yds, Rush_Yds, and Pass_Cmp influence the prediction of fantasy points, with different thresholds leading to different decisions. 
+
+
+**********************************************************************************************************************
+
+
+From above, the root node was Games Started. This makes sense that it's a key value, because the more games started, the more points a player can accumulate. We want to do recaculate based on Fantasy Points per game. But we also don't want to overreact to players who have short-term success in a few games in the season. So we want to look at players who start at least half the games and play at least 3/4th the games.  
+
+```{r Points Per Game Fantasy Points}
+
+#recreate the dataset with a new column displaying fantasy points per game, removing entries with 0 games started so the calculation can be done and only including players who played at least 12 games, to avoid players who had only a couple quality games in a small sample size
+train_pro_ffball_ppg <- train_pro_ffball %>% 
+  filter(GS >= 8 & G >= 12) %>%
+  mutate(Fant_PPG = Fant_Pts/G)
+
+test_pro_ffball_ppg <- test_pro_ffball %>%
+  filter(GS >= 8 & G >= 12) %>%
+  mutate(Fant_PPG = Fant_Pts/G)
+
+
+summary(train_pro_ffball_ppg)
+summary(test_pro_ffball_ppg)
+
+
+
+```
+
+```{r Regression Tree PPG}
+
+
+#fit the tree using rpart...after several iterations, minsplit = 20 was used
+fit_tree_ppg <- rpart(Fant_PPG ~ Age + G + GS + Pass_Cmp + Pass_Att + Pass_Yds + Pass_TD + Pass_Int + Rush_Att + Rush_Yds + Rush_Yds_per_Att + Rush_TD + Rec_Tgt + Rec_Receptions + Rec_Yds + Rec_Yds_per_Rec + Rec_TD + Fmb_Loss + Total_TD + Two_Point_Conv + Two_Point_Pass, 
+                  data = train_pro_ffball_ppg, 
+                  minsplit = 20)
+
+#visualize the  tree
+rpart.plot(fit_tree_ppg, type = 2, extra = "auto", box.palette="RdBu", shadow.col="gray", nn=TRUE)
+
+
+#output the complexity parameter info
+printcp(fit_tree_ppg)
+
+#How to choose optimal CP? Train several values of cp, see which one minimizes the error. Note that the tuning parameter for train's rpart method is the Complexity Parameter, as per http://topepo.github.io/caret/available-models.html
+fit_rpart_ppgs <- train(Fant_PPG ~ Age + G + GS + Pass_Cmp + Pass_Att + Pass_Yds + Pass_TD + Pass_Int + Rush_Att + Rush_Yds + Rush_Yds_per_Att + Rush_TD + Rec_Tgt + Rec_Receptions + Rec_Yds + Rec_Yds_per_Rec + Rec_TD + Fmb_Loss + Total_TD + Two_Point_Conv + Two_Point_Pass,
+                     method = 'rpart',
+                     tuneGrid = data.frame(cp = seq(-.25, .75, len = 25)),
+                     data = train_pro_ffball_ppg)
+
+
+#see the best value of CP
+fit_rpart_ppgs$bestTune
+
+#plot the complexity parameter vs the RMSE. This aligns with the above results about the optimal complexity parameter that minimizes the RMSE
+ggplot(fit_rpart_ppgs, highlight = TRUE)
+
+#find the smallest RMSE
+RMSE_reg_tree_ppgs_min <- fit_rpart_ppgs$results$RMSE[which.min(fit_rpart_ppgs$results$RMSE)]
+
+
+```
+
+
+The cp that minimizes the RMSE is 0. Use that cp when pruning the tree.
+```{r Regression Tree - Prune PPG}
+
+#prune fit
+pruned_fit_ppg <- prune.rpart(fit_tree_ppg, cp = 0)
+
+#visualize the pruned fit
+rpart.plot(pruned_fit_ppg, type = 5, extra = "auto", box.palette="RdBu", shadow.col="gray", nn=TRUE)
+
+
+#calculate RMSE of pruned fit
+y_hat_pruned_ppg <- predict(pruned_fit_ppg, test_pro_ffball_ppg)
+RMSE_reg_tree_pruned_ppg <- sqrt(mean(y_hat_pruned_ppg - test_pro_ffball_ppg$Fant_Pts)^2)
+
+```
+
+After ony including players who started more than half the games (8 or more) and played in at least 3/4 of the games (12 or more), we see the tree shifts its important variables to Rushing Attempts, Receiving Yards, Receiving Targets, Pass TD, and Pass Completions as key varaibles. 
+  
+It's also a balanced tree that has a reasonable percentage of the overall dataset in each leaf.  Likewise, the predicted amount in each leaf is reasonable. This alone doesn't guarantee a better model, but are good qualities of a tree-based model.  
+
+*******************************************************************************************************************************
+
+
+The combination of many trees results in the random forest algorithm. We'll try random forest next to predict fantasy points based on other variables.
+
+```{r random forest}
+
+#set the new grid with tuning parameters minNode and predFixed
+grid_rf <- expand.grid(predFixed = 1, minNode = seq(25, 100, 25))
+
+#random forest training...random forest is able to take many features and each run only uses a subset of the factors. Then the output of the model uses only select features.
+rf_fit <- train(Fant_Pts ~ Age + G + GS + Pass_Cmp + Pass_Att + Pass_Yds + Pass_TD + Pass_Int + Rush_Att + Rush_Yds + Rush_Yds_per_Att + Rush_TD + Rec_Tgt + Rec_Receptions + Rec_Yds + Rec_Yds_per_Rec + Rec_TD + Fmb_Loss + Total_TD + Two_Point_Conv + Two_Point_Pass,
+                method = 'Rborist',
+                tune_grid = grid_rf,
+                data = train_pro_ffball)
+
+#we can check the results of the random forest...
+rf_fit$results 
+
+#plot the output
+ggplot(rf_fit, highlight = TRUE)
+
+#fit the smallest RMSE 
+RMSE_rf_min <- rf_fit$results$RMSE[which.min(rf_fit$results$RMSE)]
+
+
+```
+
+
+**************************************************************************************************
+
+## Results
+
+As discussed above, we use RMSE to determine the model error
+```{r choose model}
+
+#evaluate the RMSE of different models. The one with the lowest RMSE will be used.
+RMSEs <- tibble(Model = c("Linear Regression - p-value variable selection", "Linear Regression - lasso variable selection", "Regression Tree", "Pruned Regression Tree", "Pruned Points Per Game Regression Tree", "Random Forest"), RMSE = c(RMSE_lin_reg, RMSE_lin_reg_lasso, RMSE_reg_tree_min, RMSE_reg_tree_pruned, RMSE_reg_tree_pruned_ppg, RMSE_rf_min))
+
+#output the results
+RMSEs
+
+
+```
+
+From this, we see that the Pruned Regression Tree and the original Linear Regression model using p-values to select variables have the best RMSEs. Both have an RMSE below 1, suggesting these models offer strong predictions of Fantasy Points. We should also consider the Pruned Points per Game Regression Tree, because this is predicting data on a different amount (points per game rather than total points), so is a separate scale, but appears to be a quality model based on the tree output.  
+  
+**********************************************************************************************************************
+  
+## Conclusion
+
+Ultimately, this analysis has shown that several variables, especially Touchdown-related and Yard-related variables are strong predictors of Fantasy Points scored. Therefore, it's best to target players who are expected to score many touchdowns and accumulate many yards to have better overall scores.
+
+However, the interest of this is limited, as there are direct relationships between some of these variables and fantasy points. In other words, it's known ahead of time that more touchdowns and more yards lead to more points.
+
+I see this effort as a starting point. Further topics that can be explored include: deriving advanced statistics that tell of  underlying qualities of successful players, optimizing a lineup subject to positional constraints, desiging separate models for different positions, further explore a player's points per game totals instead of total points for players, analyzing publicly available player projections to analyze quality of each source's projections, and determining an optimal draft strategy, among others.
+
+However, this project was a learning experience and gave me an opportunity to practice several applications that have made me more confident in my skills. I look forward to continue growing and continue practicing. 
